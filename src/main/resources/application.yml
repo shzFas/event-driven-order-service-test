@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: order-service
+
+  # Defaults target a locally running docker-compose stack; every value can be
+  # overridden through SPRING_* environment variables (see docker-compose.yml).
+  datasource:
+    url: jdbc:postgresql://localhost:5432/orders
+    username: orders
+    password: orders
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: localhost:29092
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
