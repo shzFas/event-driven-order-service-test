@@ -20,6 +20,22 @@ spring:
 
   kafka:
     bootstrap-servers: localhost:29092
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      # acks=all plus idempotence: the broker confirms the write reached every
+      # in-sync replica, and a retried send cannot leave a duplicate on the log.
+      acks: all
+      retries: 3
+      properties:
+        enable.idempotence: true
+
+app:
+  kafka:
+    partitions: 3
+    replication-factor: 1
+    topics:
+      orders: orders
 
 management:
   endpoints:
