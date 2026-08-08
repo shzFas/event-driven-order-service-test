@@ -18,6 +18,13 @@ java -version
 docker compose version
 ```
 
+## Getting the code
+
+```bash
+git clone https://github.com/shzFas/event-driven-order-service.git
+cd event-driven-order-service
+```
+
 ## Quick start
 
 Everything in containers — this is the fastest way to see the service running:

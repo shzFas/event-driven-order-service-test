@@ -1,95 +1,140 @@
-# Flagship-проект — гид по сборке (для тебя, не в репозиторий)
+# event-driven-order-service
 
-## Название репозитория
-`event-driven-order-service`
+**English** · [Čeština](README.cs.md)
 
-Описание репо (GitHub "About"):
-> Production-style event-driven order-processing microservice — Java 17, Spring Boot, Kafka, PostgreSQL. Idempotent consumers, resilience, full test suite, AI-first workflow.
-
-Topics/теги на GitHub (важно для поиска): `java` `spring-boot` `kafka` `microservices` `event-driven` `postgresql` `docker` `resilience4j` `testcontainers`
-
----
-
-## Структура пакетов (Maven, стандарт "по ГОСТу")
+Production-style event-driven order-processing microservice. Java 17, Spring Boot,
+Kafka, PostgreSQL — with idempotent consumers, a circuit breaker around an unstable
+dependency, and a test suite that runs against real infrastructure.
 
 ```
-event-driven-order-service/
-├── README.md                       ← (готов, EN/CZ)
-├── LICENSE                         ← MIT
-├── .gitignore                     ← target/, *.iml, .idea/, .env
-├── docker-compose.yml             ← kafka + zookeeper + postgres + app
-├── Dockerfile                     ← multi-stage build
-├── pom.xml
-└── src/
-    ├── main/
-    │   ├── java/com/yz/orderservice/
-    │   │   ├── OrderServiceApplication.java
-    │   │   ├── api/
-    │   │   │   ├── OrderController.java          ← POST /orders, GET /orders/{id}
-    │   │   │   ├── dto/OrderRequest.java         ← record
-    │   │   │   └── dto/OrderResponse.java        ← record
-    │   │   ├── domain/
-    │   │   │   ├── Order.java                    ← @Entity
-    │   │   │   ├── OrderStatus.java              ← enum (PENDING, RESERVED, PAID, FAILED)
-    │   │   │   └── OrderRepository.java          ← JpaRepository
-    │   │   ├── event/
-    │   │   │   ├── OrderCreatedEvent.java        ← record
-    │   │   │   ├── OrderEventProducer.java       ← KafkaTemplate, partition by customerId
-    │   │   │   ├── StockConsumer.java            ← @KafkaListener, idempotent upsert
-    │   │   │   └── PaymentConsumer.java          ← @KafkaListener + Resilience4j circuit breaker
-    │   │   ├── service/
-    │   │   │   └── OrderService.java             ← validate, save, publish
-    │   │   └── config/
-    │   │       ├── KafkaConfig.java
-    │   │       └── CorrelationIdFilter.java      ← observability
-    │   └── resources/
-    │       ├── application.yml
-    │       └── db/migration/
-    │           └── V1__create_orders.sql        ← Flyway
-    └── test/
-        └── java/com/yz/orderservice/
-            ├── OrderServiceTest.java             ← unit, Mockito
-            └── OrderFlowIntegrationTest.java     ← Testcontainers: real Kafka + Postgres
+POST /orders ──► orders ──► StockConsumer ──► orders.reserved ──► PaymentConsumer ──► orders.completed ──► NotificationConsumer
+   PENDING                     RESERVED                              PAID / FAILED
 ```
 
----
+## Run it
 
-## Порядок сборки за 1 день (с AI-ассистентом)
+```bash
+docker compose up --build
+curl http://localhost:8080/actuator/health
+```
 
-**Шаг 1 (30 мин):** `spring init` через start.spring.io — зависимости: Web, Spring for Apache Kafka, Spring Data JPA, PostgreSQL Driver, Flyway, Actuator, Validation, Resilience4j, Testcontainers, springdoc-openapi. Java 17, Maven.
+Place an order and watch it move through the chain:
 
-**Шаг 2 (1 ч):** domain + repository + Flyway-миграция (таблица orders с unique constraint на business key для идемпотентности).
+```bash
+curl -X POST http://localhost:8080/orders \
+     -H 'Content-Type: application/json' \
+     -d '{"customerId":"cust-1","orderReference":"ref-1","productId":"sku-1","quantity":2,"amount":99.90}'
+# 202 Accepted, Location: /orders/{id}, status PENDING
 
-**Шаг 3 (1.5 ч):** OrderController + OrderService + producer. POST принимает заказ → сохраняет PENDING → публикует OrderCreatedEvent в Kafka с ключом = customerId.
+curl http://localhost:8080/orders/{id}
+# status PAID, a moment later
+```
 
-**Шаг 4 (1.5 ч):** консьюмеры (Stock, Payment). Idempotent upsert. На Payment — Resilience4j circuit breaker вокруг симулированного "внешнего" вызова.
+Swagger UI is at http://localhost:8080/swagger-ui.html. Full instructions,
+development mode and troubleshooting are in [SETUP.md](SETUP.md).
 
-**Шаг 5 (1 ч):** тесты. Unit на OrderService (Mockito), integration на весь flow (Testcontainers поднимает реальные Kafka+Postgres).
+## What this project demonstrates
 
-**Шаг 6 (1 ч):** docker-compose (kafka, zookeeper, postgres, app), Dockerfile multi-stage, финальная проверка `docker compose up`.
+### Idempotent consumers
 
-**Шаг 7 (30 мин):** README (готов), LICENSE, чистка, коммиты осмысленными шагами.
+Kafka delivers at least once, so every consumer will eventually see the same event
+twice. Two independent layers make that harmless.
 
----
+The database owns the first one. `(customer_id, order_reference)` is a unique
+business key, so a retried request cannot create a second order — the constraint
+rejects it rather than application code hoping to catch it in time.
 
-## КРИТИЧНО для "не воздушного" резюме
+The domain owns the second. An order only moves forward from the status it is
+actually in; re-applying a transition that already happened is a no-op, and moving
+out of a terminal status is refused. Consumers check status before acting, so a
+redelivered event never reserves stock twice or charges a customer twice.
 
-1. **Коммиты — историей, не одним "initial commit".** Делай коммиты по шагам: "add domain model", "add Kafka producer", "add idempotent stock consumer", "add integration tests". Это показывает КАК ты работаешь. Рекрутер смотрит commit history.
+Verified end to end: replaying the exact same `OrderCreatedEvent` on a running
+stack leaves the order `PAID`, stock decremented once, and one charge on record.
 
-2. **Каждый коммит с осмысленным сообщением** на английском: `feat: idempotent stock consumer with upsert by business key`.
+### Resilience
 
-3. **Тесты ДОЛЖНЫ быть и проходить.** Backend-инженер без тестов в pet-проекте = красный флаг. Хотя бы 1 unit + 1 integration.
+Payments go through a Resilience4j circuit breaker. Once the simulated provider
+starts failing, the breaker opens and further calls are rejected immediately
+instead of piling onto a dependency that is already down. Orders resolve to
+`FAILED` rather than hanging in `RESERVED` forever, and the breaker returns to
+`CLOSED` on its own once the provider recovers.
 
-4. **`docker compose up` должен работать с первого раза.** Ревьюер запускает за 30 секунд — если не заводится, впечатление испорчено.
+Watch it happen:
 
-5. **Pinned на профиле GitHub** — закрепи этот репозиторий наверху (Customize your pins).
+```bash
+APP_PAYMENT_FAILURE_RATE=1.0 docker compose up -d app
+# place a few orders, then:
+curl http://localhost:8080/actuator/circuitbreakers
+```
 
-6. **Не заливай сырое.** Лучше потратить лишний час на чистоту, чем залить с TODO и закомментированным кодом.
+### Delivery guarantees
 
----
+Offsets are committed manually, only after processing has succeeded and its
+transaction has committed — a crash mid-processing replays the event instead of
+losing it. Failures are retried with exponential backoff and then parked in a
+`.DLT` topic, because retrying a poison message forever would block its partition
+and stall every other customer whose key hashes to it.
 
-## Если успеваешь второй проект (AI-first showcase)
+Events are published after the database transaction commits, so Kafka never learns
+about a state change that was rolled back. The reverse gap — a crash between commit
+and publish — would need a transactional outbox and is deliberately out of scope.
 
-`ai-document-analyzer` — Spring Boot сервис: принимает текст → отправляет в **локальную LLM через Ollama** → возвращает структурированный JSON (например, извлечение сущностей). README подчёркивает: "локальная модель, а не внешний API — для приватности данных". Это твой уникальный дифференциатор, мало кто показывает работу с локальными LLM.
+### Partitioning
 
-Но: **один вылизанный проект > два сырых.** Если на второй не хватает времени/качества — оставь один flagship, он сильнее пустого профиля с двумя недоделками.
+Every event is keyed by `customerId`. Kafka guarantees ordering within a partition,
+so one customer's events stay in sequence while different customers are processed
+in parallel across partitions. Customers share partitions, which is fine: the
+guarantee needed here is order *within* a customer, not *between* them.
+
+## Testing
+
+```bash
+./mvnw test
+```
+
+43 tests. Unit tests cover domain invariants, the service layer with Mockito, and
+the HTTP contract as a `@WebMvcTest` slice. Integration tests run against **real
+Kafka and PostgreSQL** started by Testcontainers — the whole chain to `PAID`, the
+out-of-stock path, event redelivery, and a payment provider that rejects every
+call.
+
+Docker must be running for the integration tests.
+
+## Design decisions worth explaining
+
+**`202 Accepted`, not `201 Created`.** The order exists, but stock reservation and
+payment happen asynchronously afterwards. Promising `201` would claim the work is
+finished when it has barely started.
+
+**Rejecting duplicates with `409`, not returning the existing order.** The business
+key is treated as a natural key rather than an idempotency token. Returning the
+existing order instead is a one-line change in `OrderService.createOrder`.
+
+**Consumers are thin adapters over services.** Not only for tidiness: the
+transaction must commit before the offset does, and calling a `@Transactional`
+method on the same bean would bypass the proxy and silently run without one.
+
+**Schema belongs to Flyway, never to Hibernate.** `ddl-auto` is `validate`, so a
+mapping that drifts from the migration fails at startup instead of quietly
+corrupting data.
+
+## Stack
+
+Java 17 · Spring Boot 4 · Spring for Apache Kafka · Spring Data JPA · PostgreSQL 16
+· Flyway · Resilience4j · springdoc-openapi · Testcontainers · Docker Compose
+
+## Layout
+
+```
+src/main/java/com/yz/orderservice/
+├── api/          REST layer, DTOs, RFC 9457 error handling
+├── domain/       Order entity, status lifecycle, repository
+├── event/        Events, producer, three consumers
+├── service/      Orchestration, stock and payment, circuit breaker
+└── config/       Topic layout, consumer failure policy
+```
+
+## License
+
+[MIT](LICENSE) © 2026 Yuriy Zharlikov

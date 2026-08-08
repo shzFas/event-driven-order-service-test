@@ -36,4 +36,5 @@ build/
 .env
 .DS_Store
 
-README.md
+### Personal notes kept out of the repository ###
+*.local.md
