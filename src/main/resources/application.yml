@@ -29,6 +29,18 @@ spring:
       retries: 3
       properties:
         enable.idempotence: true
+    consumer:
+      auto-offset-reset: earliest
+      # Offsets are committed by the listener, never by a background timer, so a
+      # crash mid-processing replays the event instead of losing it.
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
+        spring.json.trusted.packages: com.yz.orderservice.event
+    listener:
+      ack-mode: manual_immediate
 
 app:
   kafka:
@@ -36,12 +48,35 @@ app:
     replication-factor: 1
     topics:
       orders: orders
+      orders-reserved: orders.reserved
+      orders-completed: orders.completed
+  stock:
+    units-per-product: 100
+    # Reserving any of these always fails, which exercises the FAILED path on demand.
+    unavailable-products: sku-unavailable
+  payment:
+    # Share of calls the simulated provider rejects. Set to 1.0 to trip the breaker.
+    failure-rate: 0.0
+    latency-millis: 50
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      payment:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        failure-rate-threshold: 50
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,circuitbreakers,circuitbreakerevents
   endpoint:
     health:
       show-details: always

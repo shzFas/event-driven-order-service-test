@@ -1,5 +1,7 @@
 package com.yz.orderservice.event;
 
+import java.util.Map;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -12,9 +14,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
  * Publishes order events to Kafka.
  *
  * <p>Sending happens after the producing transaction commits, so Kafka never learns
- * about an order that was rolled back. The remaining gap is the reverse case: a
- * crash between commit and send loses the event. Closing that gap properly needs a
- * transactional outbox — the order and the outbox row are written in one
+ * about a state change that was rolled back. The remaining gap is the reverse case:
+ * a crash between commit and send loses the event. Closing that gap properly needs
+ * a transactional outbox — the state change and an outbox row are written in one
  * transaction and a relay ships the row afterwards. That is deliberately out of
  * scope here.
  */
@@ -25,16 +27,19 @@ public class OrderEventProducer {
 
 	private final KafkaTemplate<String, Object> kafkaTemplate;
 
-	private final String ordersTopic;
+	private final Map<Class<? extends OrderEvent>, String> topicsByEventType;
 
 	public OrderEventProducer(KafkaTemplate<String, Object> kafkaTemplate,
-			@Value("${app.kafka.topics.orders}") String ordersTopic) {
+			@Value("${app.kafka.topics.orders}") String ordersTopic,
+			@Value("${app.kafka.topics.orders-reserved}") String ordersReservedTopic,
+			@Value("${app.kafka.topics.orders-completed}") String ordersCompletedTopic) {
 		this.kafkaTemplate = kafkaTemplate;
-		this.ordersTopic = ordersTopic;
+		this.topicsByEventType = Map.of(OrderCreatedEvent.class, ordersTopic, OrderReservedEvent.class,
+				ordersReservedTopic, OrderCompletedEvent.class, ordersCompletedTopic);
 	}
 
 	@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-	public void onOrderCreated(OrderCreatedEvent event) {
+	public void onOrderEvent(OrderEvent event) {
 		publish(event);
 	}
 
@@ -46,13 +51,19 @@ public class OrderEventProducer {
 	 * sequence while still letting different customers be processed in parallel
 	 * across partitions — ordering where it matters, throughput everywhere else.
 	 */
-	public void publish(OrderCreatedEvent event) {
-		this.kafkaTemplate.send(this.ordersTopic, event.customerId(), event).whenComplete((result, ex) -> {
+	public void publish(OrderEvent event) {
+		String topic = this.topicsByEventType.get(event.getClass());
+		if (topic == null) {
+			throw new IllegalArgumentException("No topic configured for event type " + event.getClass().getName());
+		}
+
+		this.kafkaTemplate.send(topic, event.customerId(), event).whenComplete((result, ex) -> {
 			if (ex != null) {
-				logger.error("Failed to publish OrderCreatedEvent for order {}", event.orderId(), ex);
+				logger.error("Failed to publish {} for order {}", event.getClass().getSimpleName(), event.orderId(),
+						ex);
 				return;
 			}
-			logger.info("Published OrderCreatedEvent for order {} to {}-{}@{}", event.orderId(),
+			logger.info("Published {} for order {} to {}-{}@{}", event.getClass().getSimpleName(), event.orderId(),
 					result.getRecordMetadata().topic(), result.getRecordMetadata().partition(),
 					result.getRecordMetadata().offset());
 		});

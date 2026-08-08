@@ -58,6 +58,10 @@ services:
       SPRING_DATASOURCE_USERNAME: orders
       SPRING_DATASOURCE_PASSWORD: orders
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Share of payment calls the simulated provider rejects. Raise it to watch
+      # the circuit breaker open:
+      #   APP_PAYMENT_FAILURE_RATE=1.0 docker compose up -d app
+      APP_PAYMENT_FAILURE_RATE: ${APP_PAYMENT_FAILURE_RATE:-0.0}
     ports:
       - "8080:8080"
     healthcheck:

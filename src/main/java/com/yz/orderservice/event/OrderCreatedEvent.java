@@ -13,7 +13,7 @@ import com.yz.orderservice.domain.Order;
  * have to call back into this service to enrich what they received.
  */
 public record OrderCreatedEvent(UUID orderId, String customerId, String orderReference, String productId, int quantity,
-		BigDecimal amount, Instant occurredAt) {
+		BigDecimal amount, Instant occurredAt) implements OrderEvent {
 
 	public static OrderCreatedEvent from(Order order) {
 		return new OrderCreatedEvent(order.getId(), order.getCustomerId(), order.getOrderReference(),
