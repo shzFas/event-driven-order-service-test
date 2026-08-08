@@ -51,7 +51,7 @@ public class OrderEventProducer {
 	 * sequence while still letting different customers be processed in parallel
 	 * across partitions — ordering where it matters, throughput everywhere else.
 	 */
-	public void publish(OrderEvent event) {
+	private void publish(OrderEvent event) {
 		String topic = this.topicsByEventType.get(event.getClass());
 		if (topic == null) {
 			throw new IllegalArgumentException("No topic configured for event type " + event.getClass().getName());
