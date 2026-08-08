@@ -13,6 +13,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * Turns exceptions into RFC 9457 problem responses, so clients get one predictable
@@ -34,6 +35,19 @@ public class ApiExceptionHandler {
 		problem.setTitle("Validation failed");
 		problem.setDetail("One or more fields are invalid");
 		problem.setProperty("errors", errors);
+		return problem;
+	}
+
+	/**
+	 * A path variable or query parameter that cannot be converted — an order id that
+	 * is not a UUID, for instance. The caller sent something wrong, so this is a 400
+	 * rather than the 500 it would otherwise fall through to.
+	 */
+	@ExceptionHandler(MethodArgumentTypeMismatchException.class)
+	ProblemDetail handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+		ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_REQUEST);
+		problem.setTitle("Invalid request");
+		problem.setDetail("Parameter '%s' has an unexpected value: %s".formatted(ex.getName(), ex.getValue()));
 		return problem;
 	}
 
