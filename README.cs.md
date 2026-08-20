@@ -31,8 +31,9 @@ curl http://localhost:8080/orders/{id}
 # o chvíli později stav PAID
 ```
 
-Swagger UI běží na http://localhost:8080/swagger-ui.html. Podrobný návod, vývojový
-režim a řešení problémů najdete v [SETUP.md](SETUP.md).
+Swagger UI běží na http://localhost:8080/swagger-ui.html a dashboard v Grafaně —
+propustnost, zpoždění konzumentů, circuit breaker — na http://localhost:3000.
+Podrobný návod, vývojový režim a řešení problémů najdete v [SETUP.md](SETUP.md).
 
 ## Co projekt ukazuje
 
@@ -89,6 +90,39 @@ události jednoho zákazníka zůstávají v pořadí, zatímco různí zákazn�
 paralelně napříč partitions. Zákazníci partitions sdílejí, a to nevadí: potřebnou
 zárukou je pořadí *uvnitř* zákazníka, nikoli *mezi* zákazníky.
 
+### Pozorovatelnost
+
+Actuator vystavuje metriky knihovny Micrometer na `/actuator/prometheus`, Prometheus
+je každých pět sekund sbírá a Grafana je vykresluje. Datový zdroj i dashboard se
+provisionují ze složky `monitoring/`, takže stack naběhne už zapojený — není co
+ručně importovat ani proklikávat.
+
+| URL                   | Co                                              |
+| --------------------- | ----------------------------------------------- |
+| http://localhost:3000 | Grafana — dashboard **Order Service**           |
+| http://localhost:9090 | Prometheus — dotazy a stav sbíraných cílů       |
+
+Zpoždění konzumentů se měří dvakrát, a to záměrně. Kafka klient uvnitř JVM hlásí
+`kafka_consumer_fetch_manager_records_lag`: levné, přesné a mlčící přesně ve chvíli,
+kdy je aplikace mimo provoz — tedy tehdy, kdy na zpoždění nejvíc záleží.
+`kafka-exporter` se místo toho ptá brokeru (`kafka_consumergroup_lag`), takže číslo
+přežije to, co měří. Obojí je na dashboardu vedle sebe.
+
+Jak sledovat, jak zpoždění naroste a zase opadne:
+
+```bash
+seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
+     -H 'Content-Type: application/json' \
+     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-1","quantity":1,"amount":9.99}'
+```
+
+Objednávky přicházejí rychleji, než je `stock-service` stíhá odbavovat, takže
+zpoždění vystoupá přes tři tisíce, drží se, dokud dávka běží, a pár sekund po
+posledním požadavku spadne zpět na nulu. Tentýž dashboard ukazuje i platební circuit
+breaker přecházející do stavu `open` při `APP_PAYMENT_FAILURE_RATE=1.0`, percentily
+latence `POST /orders` počítané Prometheem z histogramových košů namísto průměrování
+souhrnů z jednotlivých instancí a cokoliv, co skončilo v topicu `.DLT`.
+
 ## Testování
 
 ```bash
@@ -124,7 +158,8 @@ potichu poškodilo data.
 ## Technologie
 
 Java 17 · Spring Boot 4 · Spring for Apache Kafka · Spring Data JPA · PostgreSQL 16
-· Flyway · Resilience4j · springdoc-openapi · Testcontainers · Docker Compose
+· Flyway · Resilience4j · Micrometer · Prometheus · Grafana · springdoc-openapi ·
+Testcontainers · Docker Compose
 
 ## Struktura
 
@@ -135,6 +170,8 @@ src/main/java/com/yz/orderservice/
 ├── event/        události, producent, tři konzumenti
 ├── service/      orchestrace, sklad a platby, circuit breaker
 └── config/       rozvržení topiců, politika selhání konzumentů
+
+monitoring/       konfigurace sběru pro Prometheus, provisionovaný zdroj dat a dashboard pro Grafanu
 ```
 
 ## Licence

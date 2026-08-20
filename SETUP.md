@@ -70,12 +70,22 @@ configuration is needed.
 
 ## Endpoints
 
-| URL                                     | Description              |
-| --------------------------------------- | ------------------------ |
-| http://localhost:8080/actuator/health    | Health check             |
-| http://localhost:8080/actuator/metrics   | Application metrics      |
-| http://localhost:8080/swagger-ui.html    | Swagger UI               |
-| http://localhost:8080/v3/api-docs        | OpenAPI specification    |
+| URL                                        | Description                       |
+| ------------------------------------------ | --------------------------------- |
+| http://localhost:8080/actuator/health       | Health check                      |
+| http://localhost:8080/actuator/metrics      | Application metrics               |
+| http://localhost:8080/actuator/prometheus   | The same metrics, Prometheus format |
+| http://localhost:8080/swagger-ui.html       | Swagger UI                        |
+| http://localhost:8080/v3/api-docs           | OpenAPI specification             |
+| http://localhost:3000                       | Grafana — **Order Service** dashboard |
+| http://localhost:9090                       | Prometheus — queries, target health |
+| http://localhost:9308/metrics               | kafka-exporter — broker-side lag  |
+
+Grafana allows anonymous access with the Admin role, so the dashboard opens
+without a login; `admin` / `admin` still works if you want to sign in. Both the
+Prometheus datasource and the dashboard are provisioned from `monitoring/` — edits
+made in the UI live only until the container is recreated, so change the JSON in
+the repository instead.
 
 ## Build and test
 
@@ -103,6 +113,9 @@ java -jar target/order-service-0.0.1-SNAPSHOT.jar
 | `5432`  | PostgreSQL                                               |
 | `29092` | Kafka, host-facing listener                              |
 | `9092`  | Kafka, internal listener — container-to-container only   |
+| `3000`  | Grafana                                                  |
+| `9090`  | Prometheus                                               |
+| `9308`  | kafka-exporter                                           |
 
 Kafka advertises two listeners. Containers on the Compose network reach the
 broker at `kafka:9092`; processes on the host must use `localhost:29092`.
@@ -151,3 +164,17 @@ docker compose ps
 ```bash
 docker compose down -v && docker compose up --build
 ```
+
+**Grafana panels say "No data".** Check what Prometheus thinks of its targets at
+http://localhost:9090/targets. The application job scrapes `app:8080` over the
+Compose network, so it goes down whenever the `app` container is not running —
+including in development mode, where the application runs on the host instead. To
+scrape a host-run application, point the `order-service` job in
+`monitoring/prometheus.yml` at `host.docker.internal:8080`.
+
+**Lag panels are empty but the rest of the dashboard works.** That is
+`kafka-exporter`. It talks to the broker with a pinned protocol version
+(`--kafka.version` in `docker-compose.yml`); if you upgrade the Kafka image far
+enough, the exporter may need a newer tag or a different version there. Check
+`docker compose logs kafka-exporter`. The application's own client-side lag panel
+keeps working regardless.

@@ -20,7 +20,8 @@ public class NotificationConsumer {
 
 	private static final Logger logger = LoggerFactory.getLogger(NotificationConsumer.class);
 
-	@KafkaListener(topics = "${app.kafka.topics.orders-completed}", groupId = "notification-service")
+	@KafkaListener(id = "notification-service", topics = "${app.kafka.topics.orders-completed}",
+			groupId = "notification-service")
 	public void onOrderCompleted(OrderCompletedEvent event, Acknowledgment acknowledgment) {
 		if (event.status() == OrderStatus.PAID) {
 			logger.info("Notifying customer {}: order {} is confirmed", event.customerId(), event.orderId());

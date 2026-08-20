@@ -30,8 +30,9 @@ curl http://localhost:8080/orders/{id}
 # status PAID, a moment later
 ```
 
-Swagger UI is at http://localhost:8080/swagger-ui.html. Full instructions,
-development mode and troubleshooting are in [SETUP.md](SETUP.md).
+Swagger UI is at http://localhost:8080/swagger-ui.html, and the Grafana dashboard —
+throughput, consumer lag, circuit breaker — at http://localhost:3000. Full
+instructions, development mode and troubleshooting are in [SETUP.md](SETUP.md).
 
 ## What this project demonstrates
 
@@ -87,6 +88,39 @@ so one customer's events stay in sequence while different customers are processe
 in parallel across partitions. Customers share partitions, which is fine: the
 guarantee needed here is order *within* a customer, not *between* them.
 
+### Observability
+
+Actuator exposes Micrometer's meters at `/actuator/prometheus`, Prometheus scrapes
+them every five seconds, and Grafana draws them. The datasource and the dashboard
+are provisioned from `monitoring/`, so the stack comes up already wired — there is
+nothing to import by hand and no clicking through a setup wizard.
+
+| URL                   | What                                            |
+| --------------------- | ----------------------------------------------- |
+| http://localhost:3000 | Grafana — the **Order Service** dashboard       |
+| http://localhost:9090 | Prometheus — raw queries and scrape target health |
+
+Consumer lag is measured twice, on purpose. The Kafka client inside the JVM reports
+`kafka_consumer_fetch_manager_records_lag`: cheap, accurate, and silent exactly when
+the application is down — which is when lag matters most. `kafka-exporter` asks the
+broker instead (`kafka_consumergroup_lag`), so the number outlives the thing being
+measured. Both are on the dashboard, side by side.
+
+Watch lag build and drain:
+
+```bash
+seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
+     -H 'Content-Type: application/json' \
+     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-1","quantity":1,"amount":9.99}'
+```
+
+Orders arrive faster than `stock-service` drains them, so lag climbs past three
+thousand, holds while the burst is in flight, and falls back to zero a few seconds
+after the last request. The same dashboard shows the payment circuit breaker
+flipping to `open` under `APP_PAYMENT_FAILURE_RATE=1.0`, `POST /orders` latency
+percentiles computed by Prometheus from histogram buckets rather than averaged from
+per-instance summaries, and anything parked in a `.DLT` topic.
+
 ## Testing
 
 ```bash
@@ -122,7 +156,8 @@ corrupting data.
 ## Stack
 
 Java 17 · Spring Boot 4 · Spring for Apache Kafka · Spring Data JPA · PostgreSQL 16
-· Flyway · Resilience4j · springdoc-openapi · Testcontainers · Docker Compose
+· Flyway · Resilience4j · Micrometer · Prometheus · Grafana · springdoc-openapi ·
+Testcontainers · Docker Compose
 
 ## Layout
 
@@ -133,6 +168,8 @@ src/main/java/com/yz/orderservice/
 ├── event/        Events, producer, three consumers
 ├── service/      Orchestration, stock and payment, circuit breaker
 └── config/       Topic layout, consumer failure policy
+
+monitoring/       Prometheus scrape config, provisioned Grafana datasource and dashboard
 ```
 
 ## License
