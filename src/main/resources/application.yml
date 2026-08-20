@@ -76,7 +76,17 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,circuitbreakers,circuitbreakerevents
+        include: health,info,metrics,prometheus,circuitbreakers,circuitbreakerevents
   endpoint:
     health:
       show-details: always
+  metrics:
+    tags:
+      # Every meter carries the service name, so a second service scraped by the
+      # same Prometheus stays distinguishable in a shared dashboard.
+      application: ${spring.application.name}
+    distribution:
+      # Latency percentiles have to be computed by Prometheus across instances,
+      # not averaged from per-instance summaries — that needs raw histogram buckets.
+      percentiles-histogram:
+        http.server.requests: true

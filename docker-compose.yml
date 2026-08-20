@@ -71,5 +71,55 @@ services:
       retries: 12
       start_period: 30s
 
+  # Broker-side consumer lag. The application's own Kafka client also reports
+  # lag, but it goes silent exactly when the app is down — which is when the
+  # number matters most.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: order-kafka-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # Pinning the protocol version keeps Sarama from negotiating down to a
+    # dialect Kafka 4 no longer speaks.
+    command: ["--kafka.server=kafka:9092", "--kafka.version=3.6.0"]
+    ports:
+      - "9308:9308"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    container_name: order-prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    container_name: order-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # It is a local demo stack; the login screen adds nothing but a click.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      # Datasource and dashboard are provisioned from the repository, so the
+      # stack comes up already wired instead of needing a manual import.
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
 volumes:
   postgres-data:
+  prometheus-data:
+  grafana-data:

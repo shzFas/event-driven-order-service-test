@@ -8,3 +8,4 @@ target/
 README.md
 docker-compose.yml
 Dockerfile
+monitoring/

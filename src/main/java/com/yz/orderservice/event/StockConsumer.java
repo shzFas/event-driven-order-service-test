@@ -27,7 +27,10 @@ public class StockConsumer {
 		this.stockService = stockService;
 	}
 
-	@KafkaListener(topics = "${app.kafka.topics.orders}", groupId = "stock-service")
+	// The explicit id names the container, and with it the Micrometer meters and
+	// the Kafka client id — otherwise the dashboard legend reads
+	// "KafkaListenerEndpointContainer#0-0".
+	@KafkaListener(id = "stock-service", topics = "${app.kafka.topics.orders}", groupId = "stock-service")
 	public void onOrderCreated(OrderCreatedEvent event, Acknowledgment acknowledgment) {
 		logger.debug("Received OrderCreatedEvent for order {}", event.orderId());
 		this.stockService.reserveStock(event);

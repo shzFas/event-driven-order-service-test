@@ -22,7 +22,8 @@ public class PaymentConsumer {
 		this.paymentService = paymentService;
 	}
 
-	@KafkaListener(topics = "${app.kafka.topics.orders-reserved}", groupId = "payment-service")
+	@KafkaListener(id = "payment-service", topics = "${app.kafka.topics.orders-reserved}",
+			groupId = "payment-service")
 	public void onOrderReserved(OrderReservedEvent event, Acknowledgment acknowledgment) {
 		logger.debug("Received OrderReservedEvent for order {}", event.orderId());
 		this.paymentService.processPayment(event);
