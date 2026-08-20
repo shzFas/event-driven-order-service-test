@@ -41,6 +41,10 @@ spring:
         spring.json.trusted.packages: com.yz.orderservice.event
     listener:
       ack-mode: manual_immediate
+      # One consumer thread per partition, so a listener can work through a
+      # backlog in parallel instead of serialising every partition onto one
+      # thread. Raising it past app.kafka.partitions only leaves threads idle.
+      concurrency: 3
 
 app:
   kafka:
@@ -90,3 +94,15 @@ management:
       # not averaged from per-instance summaries — that needs raw histogram buckets.
       percentiles-histogram:
         http.server.requests: true
+        orders.pipeline: true
+        orders.stage: true
+        spring.kafka.listener: true
+      # The pipeline spans two hops through Kafka, so its timings live in a range
+      # the default bucket set barely covers. These bounds shape the buckets
+      # around it without changing what is recorded.
+      minimum-expected-value:
+        orders.pipeline: 10ms
+        orders.stage: 1ms
+      maximum-expected-value:
+        orders.pipeline: 30s
+        orders.stage: 10s

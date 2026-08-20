@@ -62,6 +62,16 @@ services:
       # the circuit breaker open:
       #   APP_PAYMENT_FAILURE_RATE=1.0 docker compose up -d app
       APP_PAYMENT_FAILURE_RATE: ${APP_PAYMENT_FAILURE_RATE:-0.0}
+      # What one simulated charge costs. It is the slowest step in the chain, so
+      # lowering it is the quickest way to raise end-to-end throughput.
+      APP_PAYMENT_LATENCY_MILLIS: ${APP_PAYMENT_LATENCY_MILLIS:-50}
+      # Stock is held in memory and never replenished, so a load run long enough
+      # to drain a product turns into a stream of FAILED orders. Generous by
+      # default; the stock gauges on the dashboard show how much is left.
+      APP_STOCK_UNITS_PER_PRODUCT: ${APP_STOCK_UNITS_PER_PRODUCT:-1000000}
+      # Consumer threads per listener. Beyond app.kafka.partitions (3) the extra
+      # threads get no partition assigned and sit idle.
+      SPRING_KAFKA_LISTENER_CONCURRENCY: ${SPRING_KAFKA_LISTENER_CONCURRENCY:-3}
     ports:
       - "8080:8080"
     healthcheck:
@@ -70,6 +80,38 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+
+  # Continuous mock traffic. Off unless asked for, because a dashboard that is
+  # never idle hides the difference between load and a stuck pipeline:
+  #   docker compose --profile load up -d loadgen
+  #   docker compose logs -f loadgen
+  # Everything about the traffic is tunable from the environment, e.g.
+  #   LOADGEN_RATE=200 LOADGEN_CONCURRENCY=32 docker compose --profile load up -d loadgen
+  loadgen:
+    image: python:3.13-alpine
+    container_name: order-loadgen
+    profiles: ["load"]
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      LOADGEN_URL: http://app:8080
+      LOADGEN_RATE: ${LOADGEN_RATE:-20}
+      LOADGEN_CONCURRENCY: ${LOADGEN_CONCURRENCY:-8}
+      LOADGEN_DURATION: ${LOADGEN_DURATION:-0}
+      LOADGEN_RAMP: ${LOADGEN_RAMP:-0}
+      LOADGEN_PRODUCTS: ${LOADGEN_PRODUCTS:-8}
+      LOADGEN_UNAVAILABLE_SHARE: ${LOADGEN_UNAVAILABLE_SHARE:-0.02}
+      LOADGEN_DUPLICATE_SHARE: ${LOADGEN_DUPLICATE_SHARE:-0.02}
+      LOADGEN_FOLLOW_SHARE: ${LOADGEN_FOLLOW_SHARE:-0.05}
+    # -u keeps the progress lines flowing into `docker compose logs -f` instead
+    # of sitting in a block buffer.
+    command: ["python3", "-u", "/scripts/loadgen.py"]
+    # Restarted if it dies, but not after a LOADGEN_DURATION run finishes on its
+    # own — `unless-stopped` would turn a two-minute run into an endless loop.
+    restart: on-failure:3
 
   # Broker-side consumer lag. The application's own Kafka client also reports
   # lag, but it goes silent exactly when the app is down — which is when the
