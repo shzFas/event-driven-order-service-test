@@ -87,6 +87,54 @@ Prometheus datasource and the dashboard are provisioned from `monitoring/` — e
 made in the UI live only until the container is recreated, so change the JSON in
 the repository instead.
 
+## Generating load
+
+`scripts/loadgen.py` keeps placing orders until you stop it. It uses nothing but
+the Python 3 standard library, so there is no virtualenv to set up:
+
+```bash
+python3 scripts/loadgen.py                             # 10 orders/s, until Ctrl-C
+python3 scripts/loadgen.py --rate 50 --concurrency 16
+python3 scripts/loadgen.py --rate 0 --concurrency 32   # unthrottled
+python3 scripts/loadgen.py --duration 120 --ramp 30    # two minutes, ramping up
+python3 scripts/loadgen.py --help                      # every knob
+```
+
+The same thing without Python on the host — a compose profile, so it stays out of
+the way of a normal `docker compose up`:
+
+```bash
+LOADGEN_RATE=50 docker compose --profile load up -d loadgen
+docker compose logs -f loadgen
+docker compose --profile load down       # or: docker compose stop loadgen
+```
+
+Progress lines report send rate, response codes and `POST /orders` percentiles;
+a sample of orders is polled until it reaches `PAID` or `FAILED`, which measures
+the whole pipeline from outside the service. `409`s are expected — a share of the
+traffic replays a business key on purpose.
+
+| Variable                     | Flag                   | Default                 |
+| ---------------------------- | ---------------------- | ----------------------- |
+| `LOADGEN_URL`                | `--url`                | `http://localhost:8080` |
+| `LOADGEN_RATE`               | `--rate`               | `10` (`0` = unthrottled) |
+| `LOADGEN_CONCURRENCY`        | `--concurrency`        | `8`                     |
+| `LOADGEN_DURATION`           | `--duration`           | `0` (forever)           |
+| `LOADGEN_RAMP`               | `--ramp`               | `0`                     |
+| `LOADGEN_PRODUCTS`           | `--products`           | `8`                     |
+| `LOADGEN_UNAVAILABLE_SHARE`  | `--unavailable-share`  | `0.02`                  |
+| `LOADGEN_DUPLICATE_SHARE`    | `--duplicate-share`    | `0.02`                  |
+| `LOADGEN_FOLLOW_SHARE`       | `--follow-share`       | `0.05`                  |
+
+Two things to keep in mind when pushing hard. Stock is held in memory and never
+replenished, so a long run drains it and every further order for that product
+fails — `docker-compose.yml` therefore starts the app with a generous
+`APP_STOCK_UNITS_PER_PRODUCT`, and the **Stock remaining** panel shows what is
+left. And consumers are the narrow part of the pipe: `POST /orders` is one insert
+and one buffered publish, while every order downstream waits on the simulated
+payment provider. Sending faster than the consumers drain is not a bug — it is the
+backlog the dashboard exists to show.
+
 ## Build and test
 
 ```bash
@@ -132,6 +180,10 @@ the containers instead of `localhost`:
 | `SPRING_DATASOURCE_USERNAME`     | `orders`                                   |
 | `SPRING_DATASOURCE_PASSWORD`     | `orders`                                   |
 | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | `localhost:29092`                          |
+| `SPRING_KAFKA_LISTENER_CONCURRENCY` | `3` — consumer threads per listener, capped by the partition count |
+| `APP_STOCK_UNITS_PER_PRODUCT`    | `100` in the app, `1000000` in Compose     |
+| `APP_PAYMENT_FAILURE_RATE`       | `0.0` — set to `1.0` to trip the circuit breaker |
+| `APP_PAYMENT_LATENCY_MILLIS`     | `50` — how long a simulated charge takes   |
 
 Database schema is managed by Flyway (`src/main/resources/db/migration`) and
 applied automatically on startup. Hibernate runs with `ddl-auto: validate`, so
@@ -171,6 +223,11 @@ Compose network, so it goes down whenever the `app` container is not running —
 including in development mode, where the application runs on the host instead. To
 scrape a host-run application, point the `order-service` job in
 `monitoring/prometheus.yml` at `host.docker.internal:8080`.
+
+**The pipeline panels are empty but the JVM ones work.** `orders_*` and
+`stock_available_units` only exist once an order has passed through since the
+application started — they are created by the events, not declared up front. Place
+an order, or start the load generator, and they appear on the next scrape.
 
 **Lag panels are empty but the rest of the dashboard works.** That is
 `kafka-exporter`. It talks to the broker with a pinned protocol version

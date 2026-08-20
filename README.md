@@ -106,26 +106,67 @@ the application is down — which is when lag matters most. `kafka-exporter` ask
 broker instead (`kafka_consumergroup_lag`), so the number outlives the thing being
 measured. Both are on the dashboard, side by side.
 
-Watch lag build and drain:
+Boot's own meters describe the plumbing — requests served, records consumed — but
+not the thing the service is for. These are added on top, in `metrics/`:
+
+| Metric                       | What it answers                                      |
+| ---------------------------- | ---------------------------------------------------- |
+| `orders_accepted_total`, `orders_reserved_total`, `orders_completed_total` | How far orders get, and how many end `PAID` or `FAILED` |
+| `orders_pipeline_seconds`    | Accepted → terminal, the whole chain, as a histogram  |
+| `orders_stage_seconds`       | The same split into reserve and payment, so a slowdown has an address |
+| `orders_current`             | Orders sitting in each status right now               |
+| `stock_available_units`      | Units left per product, which explains a wave of `FAILED` |
+
+`orders_completed_total` carries a bucketed `reason` rather than the raw failure
+text — a tag value that varies per order would create a time series per order.
+
+### Load
+
+`scripts/loadgen.py` places orders continuously, so the dashboard has something to
+show. Standard library only, nothing to install:
 
 ```bash
-seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
-     -H 'Content-Type: application/json' \
-     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-{}","quantity":1,"amount":9.99}'
+python3 scripts/loadgen.py --rate 50            # 50 orders/s until Ctrl-C
+python3 scripts/loadgen.py --rate 0 --concurrency 32   # as fast as it goes
 ```
 
-A product per order, deliberately: every `sku` carries a hundred units, so
-hammering a single one would just measure the out-of-stock path.
+Or from the compose stack, which needs no Python on the host:
 
-Orders arrive faster than `stock-service` drains them, so its lag climbs past three
-thousand and falls back to zero within seconds of the last request. Then the same
-backlog appears on `payment-service` — the graph shows the pressure moving down the
-chain one stage at a time — and drains far more slowly, because every charge costs
-the simulated provider fifty milliseconds. All four thousand orders end up `PAID`.
-The same dashboard shows the payment circuit breaker
-flipping to `open` under `APP_PAYMENT_FAILURE_RATE=1.0`, `POST /orders` latency
-percentiles computed by Prometheus from histogram buckets rather than averaged from
-per-instance summaries, and anything parked in a `.DLT` topic.
+```bash
+LOADGEN_RATE=50 docker compose --profile load up -d loadgen
+docker compose logs -f loadgen
+```
+
+The traffic is deliberately not uniform: a small share asks for the SKU that can
+never be reserved, and another share replays a business key that was already used.
+The failure path and the idempotency guard therefore get exercised by the same run
+that measures throughput — the `409`s in the output are the unique constraint doing
+its job. A sample of orders is polled to completion, so the run also reports
+end-to-end latency measured from outside the service.
+
+```
+ elapsed     target      sent      rps      202     409     4xx     5xx     err      p50      p95      p99
+     15s      50.0/s       750     50.0      735      15       0       0       0       3ms      5ms      7ms
+         followed so far: FAILED 1  PAID 36 | awaiting 2
+```
+
+What a run makes visible: the API accepts orders far faster than the chain can
+finish them — a few thousand a second, since `POST /orders` is one insert and one
+buffered publish — and everything downstream is paced by the payment provider's
+simulated fifty milliseconds. Push past what the consumers can drain and the backlog
+appears on the dashboard stage by stage: `orders_current` climbs on `PENDING`, then
+on `RESERVED`, consumer lag follows one topic behind, and end-to-end latency goes
+from milliseconds to tens of seconds while `POST /orders` stays fast. Nothing is
+lost — the backlog drains and the orders end `PAID`, which is the point of putting a
+queue between the stages.
+
+The knobs worth turning are `app.kafka.partitions` and
+`spring.kafka.listener.concurrency` (consumer parallelism, three each by default),
+`app.payment.latency-millis` (how expensive a charge is), and
+`APP_PAYMENT_FAILURE_RATE` (how often it fails). The same dashboard shows the
+circuit breaker flipping to `open` under `APP_PAYMENT_FAILURE_RATE=1.0`, `POST
+/orders` latency percentiles computed by Prometheus from histogram buckets rather
+than averaged from per-instance summaries, and anything parked in a `.DLT` topic.
 
 ## Testing
 
@@ -133,7 +174,7 @@ per-instance summaries, and anything parked in a `.DLT` topic.
 ./mvnw test
 ```
 
-43 tests. Unit tests cover domain invariants, the service layer with Mockito, and
+48 tests. Unit tests cover domain invariants, the service layer with Mockito, and
 the HTTP contract as a `@WebMvcTest` slice. Integration tests run against **real
 Kafka and PostgreSQL** started by Testcontainers — the whole chain to `PAID`, the
 out-of-stock path, event redelivery, and a payment provider that rejects every
@@ -173,9 +214,11 @@ src/main/java/com/yz/orderservice/
 ├── domain/       Order entity, status lifecycle, repository
 ├── event/        Events, producer, three consumers
 ├── service/      Orchestration, stock and payment, circuit breaker
+├── metrics/      Pipeline metrics, kept out of the services they measure
 └── config/       Topic layout, consumer failure policy
 
 monitoring/       Prometheus scrape config, provisioned Grafana datasource and dashboard
+scripts/          Load generator
 ```
 
 ## License

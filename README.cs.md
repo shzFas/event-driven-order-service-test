@@ -108,27 +108,67 @@ kdy je aplikace mimo provoz — tedy tehdy, kdy na zpoždění nejvíc záleží
 `kafka-exporter` se místo toho ptá brokeru (`kafka_consumergroup_lag`), takže číslo
 přežije to, co měří. Obojí je na dashboardu vedle sebe.
 
-Jak sledovat, jak zpoždění naroste a zase opadne:
+Vlastní metriky Bootu popisují instalatérské práce — obsloužené požadavky, přečtené
+záznamy — ale ne to, kvůli čemu služba existuje. Ty přidává balíček `metrics/`:
+
+| Metrika                      | Na co odpovídá                                       |
+| ---------------------------- | ---------------------------------------------------- |
+| `orders_accepted_total`, `orders_reserved_total`, `orders_completed_total` | Jak daleko se objednávky dostanou a kolik jich skončí `PAID` nebo `FAILED` |
+| `orders_pipeline_seconds`    | Přijetí → koncový stav, celý řetězec, jako histogram  |
+| `orders_stage_seconds`       | Totéž rozdělené na rezervaci a platbu, aby zpomalení mělo adresu |
+| `orders_current`             | Kolik objednávek právě sedí v jednotlivých stavech    |
+| `stock_available_units`      | Kolik kusů zbývá u produktu, což vysvětlí vlnu stavů `FAILED` |
+
+`orders_completed_total` nese důvod selhání zařazený do kategorie, ne původní text —
+hodnota tagu lišící se objednávku od objednávky by vytvořila časovou řadu na každou
+z nich.
+
+### Zátěž
+
+`scripts/loadgen.py` zadává objednávky nepřetržitě, aby měl dashboard co ukazovat.
+Jen standardní knihovna, není co instalovat:
 
 ```bash
-seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
-     -H 'Content-Type: application/json' \
-     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-{}","quantity":1,"amount":9.99}'
+python3 scripts/loadgen.py --rate 50            # 50 objednávek/s až do Ctrl-C
+python3 scripts/loadgen.py --rate 0 --concurrency 32   # jak nejrychleji to jde
 ```
 
-Jeden produkt na objednávku, a to záměrně: každé `sku` má sto kusů, takže bušení do
-jediného by měřilo jen cestu při nedostatku zboží.
+Nebo rovnou ze stacku, který Python na hostiteli nevyžaduje:
 
-Objednávky přicházejí rychleji, než je `stock-service` stíhá odbavovat, takže jeho
-zpoždění vystoupá přes tři tisíce a během několika sekund po posledním požadavku
-spadne zpět na nulu. Tentýž nedodělek se pak objeví na `payment-service` — graf
-ukazuje, jak se tlak posouvá řetězcem po jednotlivých stupních — a odbourává se
-mnohem pomaleji, protože každá platba stojí simulovaného poskytovatele padesát
-milisekund. Všechny čtyři tisíce objednávek nakonec skončí ve stavu `PAID`.
-Tentýž dashboard ukazuje i platební circuit
-breaker přecházející do stavu `open` při `APP_PAYMENT_FAILURE_RATE=1.0`, percentily
-latence `POST /orders` počítané Prometheem z histogramových košů namísto průměrování
-souhrnů z jednotlivých instancí a cokoliv, co skončilo v topicu `.DLT`.
+```bash
+LOADGEN_RATE=50 docker compose --profile load up -d loadgen
+docker compose logs -f loadgen
+```
+
+Provoz záměrně není stejnorodý: malá část si žádá `sku`, které nelze rezervovat, a
+další část přehrává už použitý business klíč. Cesta selhání i pojistka idempotence se
+tak procvičí tímtéž během, který měří propustnost — `409` ve výpisu je unikátní
+omezení při práci. Vzorek objednávek se navíc sleduje až do koncového stavu, takže
+běh hlásí i latenci celého řetězce měřenou zvenčí služby.
+
+```
+ elapsed     target      sent      rps      202     409     4xx     5xx     err      p50      p95      p99
+     15s      50.0/s       750     50.0      735      15       0       0       0       3ms      5ms      7ms
+         followed so far: FAILED 1  PAID 36 | awaiting 2
+```
+
+Co takový běh ukáže: API přijímá objednávky mnohem rychleji, než je řetězec stíhá
+dokončit — několik tisíc za sekundu, protože `POST /orders` je jeden insert a jedno
+odeslání do bufferu producenta — a všechno za ním udává tempo simulovaných padesát
+milisekund platebního poskytovatele. Zatlačte víc, než konzumenti odbaví, a
+nedodělek se na dashboardu objeví stupeň po stupni: `orders_current` roste na `PENDING`, pak na
+`RESERVED`, zpoždění konzumentů následuje o topic pozadu a latence celého řetězce jde
+z milisekund na desítky sekund, zatímco `POST /orders` zůstává rychlé. Nic se
+neztratí — nedodělek se odbourá a objednávky skončí ve stavu `PAID`, což je přesně
+důvod, proč mezi stupni stojí fronta.
+
+Za pootočení stojí `app.kafka.partitions` a `spring.kafka.listener.concurrency`
+(paralelismus konzumentů, ve výchozím stavu po třech), `app.payment.latency-millis`
+(kolik stojí platba) a `APP_PAYMENT_FAILURE_RATE` (jak často selže). Tentýž dashboard
+ukazuje i platební circuit breaker přecházející do stavu `open` při
+`APP_PAYMENT_FAILURE_RATE=1.0`, percentily latence `POST /orders` počítané Prometheem
+z histogramových košů namísto průměrování souhrnů z jednotlivých instancí a cokoliv,
+co skončilo v topicu `.DLT`.
 
 ## Testování
 
@@ -136,7 +176,7 @@ souhrnů z jednotlivých instancí a cokoliv, co skončilo v topicu `.DLT`.
 ./mvnw test
 ```
 
-43 testů. Jednotkové testy pokrývají doménové invarianty, servisní vrstvu s knihovnou
+48 testů. Jednotkové testy pokrývají doménové invarianty, servisní vrstvu s knihovnou
 Mockito a HTTP kontrakt jako řez `@WebMvcTest`. Integrační testy běží proti
 **skutečné Kafce a PostgreSQL**, které spouští Testcontainers — celý řetězec až do
 `PAID`, cesta při nedostatku zboží, opětovné doručení události a poskytovatel plateb,
@@ -176,9 +216,11 @@ src/main/java/com/yz/orderservice/
 ├── domain/       entita Order, životní cyklus stavů, repozitář
 ├── event/        události, producent, tři konzumenti
 ├── service/      orchestrace, sklad a platby, circuit breaker
+├── metrics/      metriky řetězce, mimo služby, které měří
 └── config/       rozvržení topiců, politika selhání konzumentů
 
 monitoring/       konfigurace sběru pro Prometheus, provisionovaný zdroj dat a dashboard pro Grafanu
+scripts/          generátor zátěže
 ```
 
 ## Licence

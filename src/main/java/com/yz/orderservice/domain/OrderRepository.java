@@ -13,4 +13,10 @@ public interface OrderRepository extends JpaRepository<Order, UUID> {
 	 */
 	Optional<Order> findByCustomerIdAndOrderReference(String customerId, String orderReference);
 
+	/**
+	 * How many orders currently sit in a status. Backs the {@code orders.current}
+	 * gauges, and is served by {@code idx_orders_status}.
+	 */
+	long countByStatus(OrderStatus status);
+
 }
