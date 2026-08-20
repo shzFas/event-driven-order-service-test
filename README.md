@@ -111,12 +111,18 @@ Watch lag build and drain:
 ```bash
 seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
      -H 'Content-Type: application/json' \
-     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-1","quantity":1,"amount":9.99}'
+     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-{}","quantity":1,"amount":9.99}'
 ```
 
-Orders arrive faster than `stock-service` drains them, so lag climbs past three
-thousand, holds while the burst is in flight, and falls back to zero a few seconds
-after the last request. The same dashboard shows the payment circuit breaker
+A product per order, deliberately: every `sku` carries a hundred units, so
+hammering a single one would just measure the out-of-stock path.
+
+Orders arrive faster than `stock-service` drains them, so its lag climbs past three
+thousand and falls back to zero within seconds of the last request. Then the same
+backlog appears on `payment-service` — the graph shows the pressure moving down the
+chain one stage at a time — and drains far more slowly, because every charge costs
+the simulated provider fifty milliseconds. All four thousand orders end up `PAID`.
+The same dashboard shows the payment circuit breaker
 flipping to `open` under `APP_PAYMENT_FAILURE_RATE=1.0`, `POST /orders` latency
 percentiles computed by Prometheus from histogram buckets rather than averaged from
 per-instance summaries, and anything parked in a `.DLT` topic.

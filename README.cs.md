@@ -113,12 +113,19 @@ Jak sledovat, jak zpoždění naroste a zase opadne:
 ```bash
 seq 1 4000 | xargs -P 80 -I{} curl -s -o /dev/null -X POST http://localhost:8080/orders \
      -H 'Content-Type: application/json' \
-     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-1","quantity":1,"amount":9.99}'
+     -d '{"customerId":"cust-{}","orderReference":"ref-{}","productId":"sku-{}","quantity":1,"amount":9.99}'
 ```
 
-Objednávky přicházejí rychleji, než je `stock-service` stíhá odbavovat, takže
-zpoždění vystoupá přes tři tisíce, drží se, dokud dávka běží, a pár sekund po
-posledním požadavku spadne zpět na nulu. Tentýž dashboard ukazuje i platební circuit
+Jeden produkt na objednávku, a to záměrně: každé `sku` má sto kusů, takže bušení do
+jediného by měřilo jen cestu při nedostatku zboží.
+
+Objednávky přicházejí rychleji, než je `stock-service` stíhá odbavovat, takže jeho
+zpoždění vystoupá přes tři tisíce a během několika sekund po posledním požadavku
+spadne zpět na nulu. Tentýž nedodělek se pak objeví na `payment-service` — graf
+ukazuje, jak se tlak posouvá řetězcem po jednotlivých stupních — a odbourává se
+mnohem pomaleji, protože každá platba stojí simulovaného poskytovatele padesát
+milisekund. Všechny čtyři tisíce objednávek nakonec skončí ve stavu `PAID`.
+Tentýž dashboard ukazuje i platební circuit
 breaker přecházející do stavu `open` při `APP_PAYMENT_FAILURE_RATE=1.0`, percentily
 latence `POST /orders` počítané Prometheem z histogramových košů namísto průměrování
 souhrnů z jednotlivých instancí a cokoliv, co skončilo v topicu `.DLT`.
